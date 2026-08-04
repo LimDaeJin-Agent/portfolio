@@ -123,7 +123,8 @@
           </div>
         </div>
       </div>
-      <span class="nav-user" id="nav-user"></span>
+      <button type="button" class="btn btn-ghost" id="manage-open-btn">🛠 맛집 관리</button>
+      <button type="button" class="nav-user" id="nav-user"></button>
       <button class="btn btn-ghost" id="logout-btn">로그아웃</button>
     </div>
   </header>
@@ -210,6 +211,73 @@
       <button class="btn btn-primary btn-sm" id="alarm-confirm">알람 설정</button>
       <p class="alarm-hint">※ 이 브라우저 탭이 열려 있어야 알람이 울려요 (데모 환경)</p>
     </div>
+  </div>
+</div>
+
+<!-- ================= 맛집 관리 모달 (CRUD) ================= -->
+<div id="manage-modal" class="modal-backdrop" hidden>
+  <div class="modal manage-modal-inner">
+    <button class="modal-close" id="manage-close">✕</button>
+
+    <div id="manage-list-view">
+      <h2>🛠 맛집 관리</h2>
+      <p class="panel-sub-info">맛집을 직접 추가·수정·삭제할 수 있어요.</p>
+      <button type="button" class="btn btn-primary btn-sm" id="manage-add-btn">+ 새 맛집 추가</button>
+      <ul class="manage-list" id="manage-list"></ul>
+    </div>
+
+    <form id="manage-form-view" class="manage-form" hidden>
+      <h3 id="manage-form-title">새 맛집 추가</h3>
+      <input type="hidden" id="manage-form-id">
+
+      <label>상호명 <input type="text" id="manage-name" required></label>
+      <label>대분류 <select id="manage-category" required></select></label>
+      <label>소분류 <select id="manage-sub" required></select></label>
+      <label>동(지역) <input type="text" id="manage-dong" placeholder="예: 팔달구 행궁동" required></label>
+      <label>주소 <input type="text" id="manage-address" required></label>
+      <label>전화번호 <input type="text" id="manage-phone" placeholder="031-000-0000" required></label>
+      <label>별점 <input type="number" id="manage-rating" min="0" max="5" step="0.1" required></label>
+      <label>리뷰 수 <input type="number" id="manage-review-count" min="0" required></label>
+
+      <div class="manage-field-block">
+        <span class="manage-field-label">맞춤 추천 태그</span>
+        <div class="manage-tags" id="manage-tags"></div>
+      </div>
+
+      <div class="manage-field-block">
+        <span class="manage-field-label">영업시간 (전체 요일 공통)</span>
+        <input type="text" id="manage-hours-range" placeholder="10:00-22:00" required>
+        <span class="manage-field-label">휴무 요일</span>
+        <div class="manage-closed-days" id="manage-closed-days"></div>
+      </div>
+
+      <div class="manage-field-block">
+        <span class="manage-field-label">메뉴</span>
+        <div id="manage-menu-rows" class="manage-menu-rows"></div>
+        <button type="button" class="btn btn-outline btn-sm" id="manage-menu-add">+ 메뉴 추가</button>
+      </div>
+
+      <div class="manage-form-actions">
+        <button type="submit" class="btn btn-primary">저장</button>
+        <button type="button" class="btn btn-ghost" id="manage-cancel">취소</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ================= 내 정보 모달 ================= -->
+<div id="profile-modal" class="modal-backdrop" hidden>
+  <div class="modal">
+    <button class="modal-close" id="profile-close">✕</button>
+    <h2>내 정보</h2>
+    <form id="profile-form" class="auth-form">
+      <label>이름 <input type="text" id="profile-name" required></label>
+      <label id="profile-email-label">이메일 <input type="email" id="profile-email"></label>
+      <label id="profile-pw-label">새 비밀번호 <input type="password" id="profile-pw" placeholder="변경할 때만 입력하세요"></label>
+      <p id="profile-hint" class="alarm-hint"></p>
+      <button type="submit" class="btn btn-primary">저장</button>
+    </form>
+    <button type="button" class="btn btn-outline btn-danger-outline" id="profile-delete-btn">회원 탈퇴</button>
   </div>
 </div>
 

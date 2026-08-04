@@ -11,6 +11,9 @@ const LS = {
   recentMenu: 'smj_recent_menu',
   reservations: 'smj_reservations',
   alarms: 'smj_alarms',
+  customRestaurants: 'smj_custom_restaurants',
+  restaurantOverrides: 'smj_restaurant_overrides',
+  deletedRestaurants: 'smj_deleted_restaurants',
 };
 
 function loadJSON(key, fallback) {
@@ -26,9 +29,87 @@ function saveJSON(key, value) {
 }
 
 const DEFAULT_ACCOUNT = { id: 'multicampus', pw: '1234', name: '멀티캠퍼스' };
+const PROVIDER_NAMES = ['카카오톡', '네이버', '구글'];
 
 function getAllUsers() {
-  return [DEFAULT_ACCOUNT, ...loadJSON(LS.users, [])];
+  const map = new Map();
+  map.set(DEFAULT_ACCOUNT.id, DEFAULT_ACCOUNT);
+  loadJSON(LS.users, []).forEach(u => map.set(u.id, u));
+  return Array.from(map.values());
+}
+
+function upsertUser(user) {
+  const stored = loadJSON(LS.users, []);
+  const idx = stored.findIndex(u => u.id === user.id);
+  if (idx >= 0) stored[idx] = { ...stored[idx], ...user };
+  else stored.push(user);
+  saveJSON(LS.users, stored);
+}
+
+function deleteUser(id) {
+  saveJSON(LS.users, loadJSON(LS.users, []).filter(u => u.id !== id));
+}
+
+/* ============================================================
+   맛집 데이터 CRUD (원본 data.js + localStorage 추가/수정/삭제 병합)
+   ============================================================ */
+function getAllRestaurants() {
+  const overrides = loadJSON(LS.restaurantOverrides, {});
+  const deleted = new Set(loadJSON(LS.deletedRestaurants, []));
+  const seed = RESTAURANTS
+    .filter(r => !deleted.has(r.id))
+    .map(r => (overrides[r.id] ? { ...r, ...overrides[r.id] } : r));
+  const custom = loadJSON(LS.customRestaurants, []).filter(r => !deleted.has(r.id));
+  return [...seed, ...custom];
+}
+
+function getRestaurantById(id) {
+  return getAllRestaurants().find(r => r.id === id);
+}
+
+function isCustomRestaurant(id) {
+  return loadJSON(LS.customRestaurants, []).some(r => r.id === id);
+}
+
+function nextRestaurantId() {
+  const ids = [...RESTAURANTS, ...loadJSON(LS.customRestaurants, [])].map(r => r.id);
+  return Math.max(0, ...ids) + 1;
+}
+
+function createRestaurant(data) {
+  const list = loadJSON(LS.customRestaurants, []);
+  const r = { ...data, id: nextRestaurantId() };
+  list.push(r);
+  saveJSON(LS.customRestaurants, list);
+  return r;
+}
+
+function updateRestaurant(id, data) {
+  if (isCustomRestaurant(id)) {
+    const list = loadJSON(LS.customRestaurants, []);
+    const idx = list.findIndex(r => r.id === id);
+    if (idx >= 0) list[idx] = { ...list[idx], ...data, id };
+    saveJSON(LS.customRestaurants, list);
+  } else {
+    const overrides = loadJSON(LS.restaurantOverrides, {});
+    overrides[id] = { ...(overrides[id] || {}), ...data };
+    saveJSON(LS.restaurantOverrides, overrides);
+  }
+}
+
+function deleteRestaurant(id) {
+  if (isCustomRestaurant(id)) {
+    saveJSON(LS.customRestaurants, loadJSON(LS.customRestaurants, []).filter(r => r.id !== id));
+  } else {
+    const deleted = loadJSON(LS.deletedRestaurants, []);
+    if (!deleted.includes(id)) {
+      deleted.push(id);
+      saveJSON(LS.deletedRestaurants, deleted);
+    }
+  }
+  const sel = loadJSON(LS.selectedMenu, {});
+  delete sel[id];
+  saveJSON(LS.selectedMenu, sel);
 }
 
 /* ---------------- toast ---------------- */
@@ -218,7 +299,7 @@ function buildHoursHTML(hours) {
 }
 
 function filteredRestaurants() {
-  return RESTAURANTS.filter(r => {
+  return getAllRestaurants().filter(r => {
     if (filterState.main !== 'all' && r.category !== filterState.main) return false;
     if (filterState.sub !== 'all' && r.sub !== filterState.sub) return false;
     if (filterState.situation && !r.tags.includes(filterState.situation)) return false;
@@ -281,7 +362,7 @@ let currentRestId = null;
 
 function openModal(id) {
   currentRestId = id;
-  const r = RESTAURANTS.find(x => x.id === id);
+  const r = getRestaurantById(id);
   const cat = CATEGORIES[r.category];
 
   document.getElementById('modal-emoji').innerHTML = getDishIcon(r.category, r.sub);
@@ -423,14 +504,41 @@ function renderRecentPanels() {
   const visits = loadJSON(LS.recentVisits, []);
   const visitEl = document.getElementById('recent-visits-list');
   visitEl.innerHTML = visits.length
-    ? visits.map(v => `<li><span>${v.name}</span><span style="color:#9db8c0">${v.time}</span></li>`).join('')
+    ? visits.map((v, i) => `
+        <li>
+          <span>${v.name}</span>
+          <span class="recent-meta"><span style="color:#9db8c0">${v.time}</span><span class="del" data-del-visit="${i}">✕</span></span>
+        </li>`).join('')
     : '<li class="empty">아직 방문 기록이 없어요</li>';
 
   const menus = loadJSON(LS.recentMenu, []);
   const menuEl = document.getElementById('recent-menu-list');
   menuEl.innerHTML = menus.length
-    ? menus.map(m => `<li><span>${m.rest} - ${m.menu}</span><span style="color:#9db8c0">${m.time}</span></li>`).join('')
+    ? menus.map((m, i) => `
+        <li>
+          <span>${m.rest} - ${m.menu}</span>
+          <span class="recent-meta"><span style="color:#9db8c0">${m.time}</span><span class="del" data-del-menu="${i}">✕</span></span>
+        </li>`).join('')
     : '<li class="empty">아직 선택한 메뉴가 없어요</li>';
+
+  visitEl.querySelectorAll('[data-del-visit]').forEach(el => {
+    el.addEventListener('click', () => {
+      const idx = Number(el.dataset.delVisit);
+      const list = loadJSON(LS.recentVisits, []);
+      list.splice(idx, 1);
+      saveJSON(LS.recentVisits, list);
+      renderRecentPanels();
+    });
+  });
+  menuEl.querySelectorAll('[data-del-menu]').forEach(el => {
+    el.addEventListener('click', () => {
+      const idx = Number(el.dataset.delMenu);
+      const list = loadJSON(LS.recentMenu, []);
+      list.splice(idx, 1);
+      saveJSON(LS.recentMenu, list);
+      renderRecentPanels();
+    });
+  });
 }
 
 document.getElementById('recent-toggle').addEventListener('click', (e) => {
@@ -467,7 +575,7 @@ document.getElementById('reserve-confirm').addEventListener('click', () => {
   const people = document.getElementById('reserve-people').value;
   if (!date || !time) { showToast('날짜와 시간을 입력해주세요'); return; }
 
-  const r = RESTAURANTS.find(x => x.id === currentRestId);
+  const r = getRestaurantById(currentRestId);
   const list = loadJSON(LS.reservations, []);
   list.unshift({ id: Date.now(), restId: r.id, restName: r.name, date, time, people });
   saveJSON(LS.reservations, list);
@@ -486,7 +594,7 @@ document.getElementById('alarm-confirm').addEventListener('click', () => {
     showToast('미래 시점의 날짜/시간을 선택해주세요');
     return;
   }
-  const r = RESTAURANTS.find(x => x.id === currentRestId);
+  const r = getRestaurantById(currentRestId);
   const alarm = { id: Date.now(), restId: r.id, restName: r.name, date, time, datetime: target.getTime(), fired: false };
   const list = loadJSON(LS.alarms, []);
   list.unshift(alarm);
@@ -498,11 +606,20 @@ document.getElementById('alarm-confirm').addEventListener('click', () => {
 });
 
 const MAX_TIMEOUT = 2147483647; // setTimeout 최대값 (~24.8일)
+const alarmTimers = new Map();
+
+function clearAlarmTimeout(id) {
+  if (alarmTimers.has(id)) {
+    clearTimeout(alarmTimers.get(id));
+    alarmTimers.delete(id);
+  }
+}
 
 function scheduleAlarmTimeout(alarm) {
+  clearAlarmTimeout(alarm.id);
   const delay = alarm.datetime - Date.now();
   if (delay <= 0 || delay > MAX_TIMEOUT) return;
-  setTimeout(() => fireAlarm(alarm.id), delay);
+  alarmTimers.set(alarm.id, setTimeout(() => fireAlarm(alarm.id), delay));
 }
 
 function scheduleAllPendingAlarms() {
@@ -528,27 +645,75 @@ function fireAlarm(alarmId) {
   renderReservationPanels();
 }
 
+let editingReservationId = null;
+let editingAlarmId = null;
+
 function renderReservationPanels() {
   const reservations = loadJSON(LS.reservations, []);
   const resEl = document.getElementById('reservation-list');
   resEl.innerHTML = reservations.length
-    ? reservations.map(r => `
+    ? reservations.map(r => r.id === editingReservationId ? `
+        <li class="edit-row">
+          <input type="date" class="edit-date" value="${r.date}">
+          <input type="time" class="edit-time" value="${r.time}">
+          <input type="number" class="edit-people" min="1" value="${r.people}">
+          <span class="row-actions">
+            <span class="edit" data-save-res="${r.id}">저장</span>
+            <span class="del" data-cancel-res="${r.id}">취소</span>
+          </span>
+        </li>` : `
         <li>
           <span>${r.restName} (${r.date} ${r.time}, ${r.people}명)</span>
-          <span class="del" data-del-res="${r.id}">삭제</span>
+          <span class="row-actions">
+            <span class="edit" data-edit-res="${r.id}">수정</span>
+            <span class="del" data-del-res="${r.id}">삭제</span>
+          </span>
         </li>`).join('')
     : '<li class="empty">예약 내역이 없어요</li>';
 
   const alarms = loadJSON(LS.alarms, []);
   const alarmEl = document.getElementById('alarm-list');
   alarmEl.innerHTML = alarms.length
-    ? alarms.map(a => `
+    ? alarms.map(a => a.id === editingAlarmId ? `
+        <li class="edit-row">
+          <input type="date" class="edit-date" value="${a.date}">
+          <input type="time" class="edit-time" value="${a.time}">
+          <span class="row-actions">
+            <span class="edit" data-save-alarm="${a.id}">저장</span>
+            <span class="del" data-cancel-alarm="${a.id}">취소</span>
+          </span>
+        </li>` : `
         <li>
           <span>${a.fired ? '✅' : '⏰'} ${a.restName} (${a.date} ${a.time})</span>
-          <span class="del" data-del-alarm="${a.id}">삭제</span>
+          <span class="row-actions">
+            <span class="edit" data-edit-alarm="${a.id}">수정</span>
+            <span class="del" data-del-alarm="${a.id}">삭제</span>
+          </span>
         </li>`).join('')
     : '<li class="empty">설정된 알람이 없어요</li>';
 
+  resEl.querySelectorAll('[data-edit-res]').forEach(el => {
+    el.addEventListener('click', () => { editingReservationId = Number(el.dataset.editRes); renderReservationPanels(); });
+  });
+  resEl.querySelectorAll('[data-cancel-res]').forEach(el => {
+    el.addEventListener('click', () => { editingReservationId = null; renderReservationPanels(); });
+  });
+  resEl.querySelectorAll('[data-save-res]').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = Number(el.dataset.saveRes);
+      const li = el.closest('li');
+      const date = li.querySelector('.edit-date').value;
+      const time = li.querySelector('.edit-time').value;
+      const people = li.querySelector('.edit-people').value;
+      if (!date || !time || !people) { showToast('모든 값을 입력해주세요'); return; }
+      const list = loadJSON(LS.reservations, []);
+      const idx = list.findIndex(r => r.id === id);
+      if (idx >= 0) { list[idx] = { ...list[idx], date, time, people }; saveJSON(LS.reservations, list); }
+      editingReservationId = null;
+      renderReservationPanels();
+      showToast('예약이 수정되었습니다');
+    });
+  });
   resEl.querySelectorAll('[data-del-res]').forEach(el => {
     el.addEventListener('click', () => {
       const id = Number(el.dataset.delRes);
@@ -556,14 +721,288 @@ function renderReservationPanels() {
       renderReservationPanels();
     });
   });
+
+  alarmEl.querySelectorAll('[data-edit-alarm]').forEach(el => {
+    el.addEventListener('click', () => { editingAlarmId = Number(el.dataset.editAlarm); renderReservationPanels(); });
+  });
+  alarmEl.querySelectorAll('[data-cancel-alarm]').forEach(el => {
+    el.addEventListener('click', () => { editingAlarmId = null; renderReservationPanels(); });
+  });
+  alarmEl.querySelectorAll('[data-save-alarm]').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = Number(el.dataset.saveAlarm);
+      const li = el.closest('li');
+      const date = li.querySelector('.edit-date').value;
+      const time = li.querySelector('.edit-time').value;
+      const target = new Date(`${date}T${time}:00`);
+      if (!date || !time || isNaN(target.getTime()) || target.getTime() <= Date.now()) {
+        showToast('미래 시점의 날짜/시간을 선택해주세요');
+        return;
+      }
+      const list = loadJSON(LS.alarms, []);
+      const idx = list.findIndex(a => a.id === id);
+      if (idx >= 0) {
+        list[idx] = { ...list[idx], date, time, datetime: target.getTime(), fired: false };
+        saveJSON(LS.alarms, list);
+        scheduleAlarmTimeout(list[idx]);
+      }
+      editingAlarmId = null;
+      renderReservationPanels();
+      showToast('알람이 수정되었습니다');
+    });
+  });
   alarmEl.querySelectorAll('[data-del-alarm]').forEach(el => {
     el.addEventListener('click', () => {
       const id = Number(el.dataset.delAlarm);
+      clearAlarmTimeout(id);
       saveJSON(LS.alarms, loadJSON(LS.alarms, []).filter(a => a.id !== id));
       renderReservationPanels();
     });
   });
 }
+
+/* ============================================================
+   맛집 관리 모달 (Create / Update / Delete)
+   ============================================================ */
+const manageModal = document.getElementById('manage-modal');
+const manageListView = document.getElementById('manage-list-view');
+const manageFormView = document.getElementById('manage-form-view');
+
+document.getElementById('manage-open-btn').addEventListener('click', () => {
+  showManageList();
+  manageModal.hidden = false;
+});
+document.getElementById('manage-close').addEventListener('click', () => { manageModal.hidden = true; });
+manageModal.addEventListener('click', (e) => { if (e.target === manageModal) manageModal.hidden = true; });
+
+function showManageList() {
+  manageFormView.hidden = true;
+  manageListView.hidden = false;
+  renderManageList();
+}
+
+function renderManageList() {
+  const listEl = document.getElementById('manage-list');
+  const all = getAllRestaurants();
+  listEl.innerHTML = all.map(r => `
+    <li>
+      <span class="manage-list-icon">${getDishIcon(r.category, r.sub)}</span>
+      <span class="manage-list-info">
+        <b>${r.name}</b>
+        <span>${CATEGORIES[r.category].label} · ${CATEGORIES[r.category].subs[r.sub]} · ${r.dong}</span>
+      </span>
+      <span class="row-actions">
+        <span class="edit" data-manage-edit="${r.id}">수정</span>
+        <span class="del" data-manage-del="${r.id}">삭제</span>
+      </span>
+    </li>
+  `).join('');
+
+  listEl.querySelectorAll('[data-manage-edit]').forEach(el => {
+    el.addEventListener('click', () => openManageForm(Number(el.dataset.manageEdit)));
+  });
+  listEl.querySelectorAll('[data-manage-del]').forEach(el => {
+    el.addEventListener('click', () => {
+      if (el.dataset.confirm !== '1') {
+        el.dataset.confirm = '1';
+        el.textContent = '정말 삭제?';
+        setTimeout(() => { el.dataset.confirm = '0'; el.textContent = '삭제'; }, 3000);
+        return;
+      }
+      const id = Number(el.dataset.manageDel);
+      deleteRestaurant(id);
+      renderManageList();
+      renderCards();
+      showToast('맛집이 삭제되었습니다');
+    });
+  });
+}
+
+function populateCategorySelect(selected) {
+  const sel = document.getElementById('manage-category');
+  sel.innerHTML = Object.entries(CATEGORIES).map(([key, c]) => `<option value="${key}">${c.emoji} ${c.label}</option>`).join('');
+  sel.value = selected || Object.keys(CATEGORIES)[0];
+}
+function populateSubSelect(categoryKey, selected) {
+  const sel = document.getElementById('manage-sub');
+  const subs = CATEGORIES[categoryKey].subs;
+  sel.innerHTML = Object.entries(subs).map(([key, label]) => `<option value="${key}">${label}</option>`).join('');
+  if (selected) sel.value = selected;
+}
+document.getElementById('manage-category').addEventListener('change', (e) => populateSubSelect(e.target.value));
+
+function populateTagCheckboxes(selectedTags) {
+  const wrap = document.getElementById('manage-tags');
+  wrap.innerHTML = Object.entries(SITUATION_TAGS).map(([key, t]) => `
+    <label class="manage-tag-chip">
+      <input type="checkbox" value="${key}" ${(selectedTags || []).includes(key) ? 'checked' : ''}> ${t.emoji} ${t.label}
+    </label>
+  `).join('');
+}
+
+function populateClosedDayCheckboxes(hours) {
+  const wrap = document.getElementById('manage-closed-days');
+  wrap.innerHTML = WEEK_DAYS.map(d => `
+    <label class="manage-tag-chip">
+      <input type="checkbox" value="${d}" ${hours && hours[d] === '정기휴무' ? 'checked' : ''}> ${WEEK_DAY_LABELS[d]}
+    </label>
+  `).join('');
+}
+
+function addMenuRow(name, price) {
+  const wrap = document.getElementById('manage-menu-rows');
+  const row = document.createElement('div');
+  row.className = 'manage-menu-row';
+  row.innerHTML = `
+    <input type="text" placeholder="메뉴명" class="menu-row-name" value="${name || ''}">
+    <input type="number" placeholder="가격" class="menu-row-price" min="0" value="${price != null ? price : ''}">
+    <button type="button" class="menu-row-remove">✕</button>
+  `;
+  row.querySelector('.menu-row-remove').addEventListener('click', () => row.remove());
+  wrap.appendChild(row);
+}
+document.getElementById('manage-menu-add').addEventListener('click', () => addMenuRow());
+
+function openManageForm(id) {
+  manageListView.hidden = true;
+  manageFormView.hidden = false;
+
+  const r = id != null ? getRestaurantById(id) : null;
+  document.getElementById('manage-form-title').textContent = r ? '맛집 정보 수정' : '새 맛집 추가';
+  document.getElementById('manage-form-id').value = r ? r.id : '';
+  document.getElementById('manage-name').value = r ? r.name : '';
+
+  populateCategorySelect(r ? r.category : null);
+  populateSubSelect(document.getElementById('manage-category').value, r ? r.sub : null);
+
+  document.getElementById('manage-dong').value = r ? r.dong : '';
+  document.getElementById('manage-address').value = r ? r.address : '';
+  document.getElementById('manage-phone').value = r ? r.phone : '';
+  document.getElementById('manage-rating').value = r ? r.rating : 4.5;
+  document.getElementById('manage-review-count').value = r ? r.reviewCount : 0;
+  populateTagCheckboxes(r ? r.tags : []);
+  populateClosedDayCheckboxes(r ? r.hours : null);
+  document.getElementById('manage-hours-range').value = r
+    ? (WEEK_DAYS.map(d => r.hours[d]).find(v => v !== '정기휴무') || '10:00-22:00')
+    : '10:00-22:00';
+
+  document.getElementById('manage-menu-rows').innerHTML = '';
+  if (r && r.menu.length) r.menu.forEach(m => addMenuRow(m.name, m.price));
+  else addMenuRow();
+}
+
+document.getElementById('manage-add-btn').addEventListener('click', () => openManageForm(null));
+document.getElementById('manage-cancel').addEventListener('click', showManageList);
+
+document.getElementById('manage-form-view').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const idVal = document.getElementById('manage-form-id').value;
+  const id = idVal ? Number(idVal) : null;
+
+  const name = document.getElementById('manage-name').value.trim();
+  const category = document.getElementById('manage-category').value;
+  const sub = document.getElementById('manage-sub').value;
+  const dong = document.getElementById('manage-dong').value.trim();
+  const address = document.getElementById('manage-address').value.trim();
+  const phone = document.getElementById('manage-phone').value.trim();
+  const rating = parseFloat(document.getElementById('manage-rating').value);
+  const reviewCount = parseInt(document.getElementById('manage-review-count').value, 10) || 0;
+  const tags = Array.from(document.querySelectorAll('#manage-tags input:checked')).map(cb => cb.value);
+  const closedDays = Array.from(document.querySelectorAll('#manage-closed-days input:checked')).map(cb => cb.value);
+  const hoursRange = document.getElementById('manage-hours-range').value.trim() || '10:00-22:00';
+  const hours = withClosed(hoursRange, closedDays);
+  const menu = Array.from(document.querySelectorAll('.manage-menu-row')).map(row => ({
+    name: row.querySelector('.menu-row-name').value.trim(),
+    price: parseInt(row.querySelector('.menu-row-price').value, 10) || 0,
+  })).filter(m => m.name);
+
+  if (!name || !address || !phone || !menu.length || isNaN(rating)) {
+    showToast('필수 항목을 모두 입력해주세요');
+    return;
+  }
+
+  const data = { name, category, sub, dong, address, phone, rating, reviewCount, tags, hours, menu, emoji: CATEGORIES[category].emoji };
+
+  if (id != null) {
+    updateRestaurant(id, data);
+    showToast('맛집 정보가 수정되었습니다');
+  } else {
+    createRestaurant(data);
+    showToast('새 맛집이 등록되었습니다');
+  }
+  showManageList();
+  renderCards();
+});
+
+/* ============================================================
+   내 정보 관리 (Update / 회원 탈퇴)
+   ============================================================ */
+document.getElementById('nav-user').addEventListener('click', openProfileModal);
+
+function openProfileModal() {
+  const session = loadJSON(LS.session, null);
+  if (!session) return;
+  const isProvider = PROVIDER_NAMES.includes(session.id);
+  const stored = getAllUsers().find(u => u.id === session.id);
+
+  document.getElementById('profile-name').value = session.name;
+  document.getElementById('profile-email-label').hidden = isProvider;
+  document.getElementById('profile-pw-label').hidden = isProvider;
+  document.getElementById('profile-email').value = stored ? (stored.email || '') : '';
+  document.getElementById('profile-pw').value = '';
+  document.getElementById('profile-hint').textContent = isProvider
+    ? `${session.id} 로그인 계정은 표시 이름만 수정할 수 있어요.`
+    : '비밀번호는 변경할 때만 입력하세요.';
+  const delBtn = document.getElementById('profile-delete-btn');
+  delBtn.dataset.confirm = '0';
+  delBtn.textContent = '회원 탈퇴';
+  document.getElementById('profile-modal').hidden = false;
+}
+document.getElementById('profile-close').addEventListener('click', () => { document.getElementById('profile-modal').hidden = true; });
+document.getElementById('profile-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'profile-modal') document.getElementById('profile-modal').hidden = true;
+});
+
+document.getElementById('profile-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const session = loadJSON(LS.session, null);
+  if (!session) return;
+  const isProvider = PROVIDER_NAMES.includes(session.id);
+  const name = document.getElementById('profile-name').value.trim();
+  if (!name) { showToast('이름을 입력해주세요'); return; }
+
+  if (isProvider) {
+    session.name = name;
+  } else {
+    const email = document.getElementById('profile-email').value.trim();
+    const pw = document.getElementById('profile-pw').value;
+    const existing = getAllUsers().find(u => u.id === session.id) || {};
+    upsertUser({ id: session.id, name, email, pw: pw || existing.pw || '' });
+    session.name = name;
+  }
+  saveJSON(LS.session, session);
+  document.getElementById('nav-user').textContent = `👋 ${name}님`;
+  document.getElementById('profile-modal').hidden = true;
+  showToast('내 정보가 저장되었습니다');
+});
+
+document.getElementById('profile-delete-btn').addEventListener('click', (e) => {
+  const btn = e.currentTarget;
+  if (btn.dataset.confirm !== '1') {
+    btn.dataset.confirm = '1';
+    btn.textContent = '정말 탈퇴하시겠어요? (다시 클릭)';
+    setTimeout(() => { btn.dataset.confirm = '0'; btn.textContent = '회원 탈퇴'; }, 3000);
+    return;
+  }
+  const session = loadJSON(LS.session, null);
+  if (session && !PROVIDER_NAMES.includes(session.id)) {
+    deleteUser(session.id);
+  }
+  localStorage.removeItem(LS.session);
+  document.getElementById('profile-modal').hidden = true;
+  showToast('회원 탈퇴가 처리되었습니다');
+  showView(viewLogin);
+});
 
 /* ============================================================
    초기 진입: 세션 있으면 바로 앱 화면
